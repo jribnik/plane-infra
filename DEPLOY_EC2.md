@@ -22,7 +22,7 @@ This guide covers deploying your custom Plane instance on AWS EC2.
    sudo yum install -y git
    ```
 
-4. **Clone deployment scripts**:
+4. **Clone deployment scripts** (the script will clone Plane itself):
 
    ```bash
    git clone https://github.com/jribnik/plane-infra.git
