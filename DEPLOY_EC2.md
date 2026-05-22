@@ -22,29 +22,39 @@ This guide covers deploying your custom Plane instance on AWS EC2.
    sudo yum install -y git
    ```
 
-4. **Clone repositories**:
+4. **Clone deployment scripts**:
 
    ```bash
-   # Clone Plane repo
-   git clone https://github.com/jribnik/plane.git
-
-   # Clone deployment scripts repo
    git clone https://github.com/jribnik/plane-infra.git
+   cd plane-infra
    ```
 
-5. **Run deployment script**:
+5. **Configure AWS credentials** (required for S3 file storage):
 
    ```bash
-   cd plane-infra
+   export AWS_ACCESS_KEY_ID=your_access_key
+   export AWS_SECRET_ACCESS_KEY=your_secret_key
+   export AWS_S3_BUCKET_NAME=your_bucket_name
+   export AWS_REGION=us-east-1
+   ```
 
-   # Deploy (use sudo)
-   sudo ./deploy-ec2.sh preview
+6. **Optional: Set custom domain**:
+
+   ```bash
+   export PLANE_DOMAIN=plane.yourdomain.com
+   ```
+
+7. **Run deployment script**:
+
+   ```bash
+   # Deploy (use sudo, env vars will be passed through)
+   sudo -E ./deploy-ec2.sh preview
 
    # Or deploy a specific branch
-   sudo ./deploy-ec2.sh kanban-card-cover-images
+   sudo -E ./deploy-ec2.sh kanban-card-cover-images
    ```
 
-6. **Access Plane**:
+8. **Access Plane**:
    - Web: `http://your-instance-ip:3000`
    - API: `http://your-instance-ip:8000`
    - Admin: `http://your-instance-ip:3001/god-mode`
@@ -66,31 +76,26 @@ The `deploy-ec2.sh` script automates:
 
 ### Environment Variables
 
-Edit `apps/api/.env` to configure:
+The deployment script will automatically configure most settings. You can customize by setting environment variables before deployment, or by editing `/opt/plane/apps/api/.env` after deployment.
 
-**Required**:
+**Required (set before deployment)**:
 
-- `POSTGRES_PASSWORD` - Database password
 - `AWS_ACCESS_KEY_ID` - S3 access key
 - `AWS_SECRET_ACCESS_KEY` - S3 secret key
 - `AWS_S3_BUCKET_NAME` - S3 bucket for uploads
-- `AWS_REGION` - AWS region
+- `AWS_REGION` - AWS region (e.g., us-east-1)
 
-**Optional**:
+**Optional (set before deployment)**:
+
+- `PLANE_DOMAIN` - Your domain (default: instance public IP)
+- `POSTGRES_PASSWORD` - Database password (auto-generated if not set)
+
+**Post-deployment configuration** (`/opt/plane/apps/api/.env`):
 
 - `WEB_URL` - Your domain (default: localhost)
 - `GUNICORN_WORKERS` - API workers (default: 2)
 - `FILE_SIZE_LIMIT` - Max upload size in bytes
 - `DEBUG` - Set to 0 for production
-
-### Custom Domain
-
-Set the domain before running:
-
-```bash
-export PLANE_DOMAIN=plane.yourdomain.com
-sudo ./deploy-ec2.sh preview
-```
 
 ## Managing Services
 
