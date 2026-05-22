@@ -22,12 +22,20 @@ This guide covers deploying your custom Plane instance on AWS EC2.
    sudo yum install -y git
    ```
 
-4. **Run deployment script**:
+4. **Clone repositories**:
 
    ```bash
-   # Clone repo
+   # Clone Plane repo
    git clone https://github.com/jribnik/plane.git
-   cd plane
+
+   # Clone deployment scripts repo
+   git clone https://github.com/jribnik/plane-infra.git
+   ```
+
+5. **Run deployment script**:
+
+   ```bash
+   cd plane-infra
 
    # Deploy (use sudo)
    sudo ./deploy-ec2.sh preview
@@ -36,7 +44,7 @@ This guide covers deploying your custom Plane instance on AWS EC2.
    sudo ./deploy-ec2.sh kanban-card-cover-images
    ```
 
-5. **Access Plane**:
+6. **Access Plane**:
    - Web: `http://your-instance-ip:3000`
    - API: `http://your-instance-ip:8000`
    - Admin: `http://your-instance-ip:3001/god-mode`
@@ -46,11 +54,13 @@ This guide covers deploying your custom Plane instance on AWS EC2.
 The `deploy-ec2.sh` script automates:
 
 1. ✅ System updates and Docker installation
-2. ✅ Repository cloning and branch checkout
+2. ✅ Plane repository cloning to `/opt/plane` and branch checkout
 3. ✅ Environment configuration
 4. ✅ Docker image building (takes ~10-15 minutes)
 5. ✅ Service startup
 6. ✅ Optional Nginx reverse proxy setup
+
+**Note:** The deployment scripts are in the `plane-infra` repo, but they will clone and install the actual Plane application to `/opt/plane`.
 
 ## Configuration
 
@@ -333,6 +343,11 @@ docker compose logs plane-db
 │  └───────────┘  │
 └─────────────────┘
 ```
+
+## Repository Structure
+
+- **Plane Application**: https://github.com/jribnik/plane (installed at `/opt/plane`)
+- **Deployment Scripts**: https://github.com/jribnik/plane-infra (this repo)
 
 ## Support
 
