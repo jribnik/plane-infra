@@ -61,7 +61,15 @@ log_info "Domain: $DOMAIN"
 #############################################################################
 log_info "Updating system packages..."
 
-if [ -f /etc/debian_version ]; then
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    OS_ID="$ID"
+else
+    log_error "Cannot detect operating system"
+    exit 1
+fi
+
+if [ "$OS_ID" = "ubuntu" ] || [ "$OS_ID" = "debian" ]; then
     # Ubuntu/Debian
     apt-get update
     apt-get install -y \
@@ -78,8 +86,8 @@ if [ -f /etc/debian_version ]; then
     sh get-docker.sh
     rm get-docker.sh
 
-elif [ -f /etc/redhat-release ]; then
-    # Amazon Linux/RHEL
+elif [ "$OS_ID" = "amzn" ] || [ "$OS_ID" = "rhel" ] || [ "$OS_ID" = "centos" ]; then
+    # Amazon Linux/RHEL/CentOS
     yum update -y
     yum install -y \
         git \
@@ -87,7 +95,7 @@ elif [ -f /etc/redhat-release ]; then
 
     systemctl start docker
 else
-    log_error "Unsupported operating system"
+    log_error "Unsupported operating system: $OS_ID"
     exit 1
 fi
 
