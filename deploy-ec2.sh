@@ -52,6 +52,43 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+#############################################################################
+# Validate required environment variables
+#############################################################################
+log_info "Validating environment variables..."
+
+REQUIRED_VARS=(
+    "AWS_ACCESS_KEY_ID"
+    "AWS_SECRET_ACCESS_KEY"
+    "AWS_S3_BUCKET_NAME"
+    "AWS_REGION"
+)
+
+MISSING_VARS=()
+for var in "${REQUIRED_VARS[@]}"; do
+    if [ -z "${!var}" ]; then
+        MISSING_VARS+=("$var")
+    fi
+done
+
+if [ ${#MISSING_VARS[@]} -gt 0 ]; then
+    log_error "Missing required environment variables:"
+    for var in "${MISSING_VARS[@]}"; do
+        echo "  - $var"
+    done
+    echo ""
+    echo "Please set them before running this script:"
+    echo "  export AWS_ACCESS_KEY_ID=your_key"
+    echo "  export AWS_SECRET_ACCESS_KEY=your_secret"
+    echo "  export AWS_S3_BUCKET_NAME=your_bucket"
+    echo "  export AWS_REGION=us-east-1"
+    echo ""
+    echo "Then run with sudo -E to preserve environment variables:"
+    echo "  sudo -E ./deploy-ec2.sh preview"
+    exit 1
+fi
+
+log_info "✓ All required environment variables are set"
 log_info "Starting Plane deployment on EC2..."
 log_info "Branch: $BRANCH"
 log_info "Domain: $DOMAIN"
@@ -94,6 +131,12 @@ elif [ "$OS_ID" = "amzn" ] || [ "$OS_ID" = "rhel" ] || [ "$OS_ID" = "centos" ]; 
         docker
 
     systemctl start docker
+
+    # Install Docker Compose plugin
+    log_info "Installing Docker Compose..."
+    mkdir -p /usr/local/lib/docker/cli-plugins
+    curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose
+    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 else
     log_error "Unsupported operating system: $OS_ID"
     exit 1
@@ -105,6 +148,7 @@ systemctl start docker
 
 log_info "Docker installed successfully"
 docker --version
+docker compose version
 
 #############################################################################
 # Step 2: Clone repository and checkout branch
