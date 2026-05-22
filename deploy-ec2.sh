@@ -164,7 +164,7 @@ log_info "Cloning Plane repository..."
 # Remove existing installation if present
 if [ -d "$INSTALL_DIR" ]; then
     log_warn "Existing installation found at $INSTALL_DIR"
-    read -p "Remove and reinstall? (y/N) " -n 1 -r
+    read -p "Remove and reinstall? (y/N) " -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         log_info "Removing existing installation..."
