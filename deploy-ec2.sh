@@ -199,15 +199,14 @@ if [ ! -f apps/api/.env ]; then
     sed -i "s|LIVE_SERVER_SECRET_KEY=\"secret-key\"|LIVE_SERVER_SECRET_KEY=\"$SECRET_KEY\"|g" apps/api/.env
     sed -i "s|DEBUG=0|DEBUG=0|g" apps/api/.env
 
+    # Set AWS credentials from environment variables
+    sed -i "s|AWS_ACCESS_KEY_ID=.*|AWS_ACCESS_KEY_ID=\"$AWS_ACCESS_KEY_ID\"|g" apps/api/.env
+    sed -i "s|AWS_SECRET_ACCESS_KEY=.*|AWS_SECRET_ACCESS_KEY=\"$AWS_SECRET_ACCESS_KEY\"|g" apps/api/.env
+    sed -i "s|AWS_S3_BUCKET_NAME=.*|AWS_S3_BUCKET_NAME=\"$AWS_S3_BUCKET_NAME\"|g" apps/api/.env
+    sed -i "s|AWS_REGION=.*|AWS_REGION=\"$AWS_REGION\"|g" apps/api/.env
+
     log_info "Environment file configured at apps/api/.env"
-    log_warn "Please review and update the following in apps/api/.env:"
-    log_warn "  - AWS S3 credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_BUCKET_NAME)"
-    log_warn "  - Database passwords (POSTGRES_PASSWORD)"
-    log_warn "  - Redis configuration"
-    log_warn "  - RabbitMQ configuration"
-    log_warn ""
-    read -p "Press Enter to edit .env file now, or Ctrl+C to exit and edit manually..."
-    ${EDITOR:-nano} apps/api/.env
+    log_info "✓ AWS credentials configured from environment variables"
 else
     log_info "Using existing .env file"
 fi
