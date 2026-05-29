@@ -188,22 +188,33 @@ if [ -d "$INSTALL_DIR/.git" ]; then
     # Fetch latest
     git fetch --all --tags
 
-    # Check if target is a tag, branch, or commit
-    if git rev-parse "v$TARGET_VERSION" >/dev/null 2>&1; then
+    # Resolve the target, in priority order: version tag (v-prefixed), then a
+    # local ref (tag/branch/commit), then a remote-only branch. The last case
+    # is the common one: a branch like "production-release" that exists on the
+    # remote but has never been checked out on this box, so it has no local
+    # ref and `git rev-parse production-release` would fail. We check
+    # origin/<name> and let `git checkout <name>` create the local tracking
+    # branch (git's DWIM behavior).
+    if git rev-parse --verify "refs/tags/v$TARGET_VERSION" >/dev/null 2>&1; then
         # It's a version tag (with v prefix)
         git checkout "v$TARGET_VERSION"
         log_info "Checked out tag: v$TARGET_VERSION"
-    elif git rev-parse "$TARGET_VERSION" >/dev/null 2>&1; then
-        # It's a tag without v, branch, or commit
+    elif git rev-parse --verify "$TARGET_VERSION" >/dev/null 2>&1; then
+        # It's a local tag, branch, or commit
         git checkout "$TARGET_VERSION"
 
-        # If it's a branch, pull latest
+        # If it's a local branch, pull latest
         if git show-ref --verify --quiet "refs/heads/$TARGET_VERSION"; then
             git pull origin "$TARGET_VERSION"
             log_info "Pulled latest from branch: $TARGET_VERSION"
         else
             log_info "Checked out: $TARGET_VERSION"
         fi
+    elif git rev-parse --verify "refs/remotes/origin/$TARGET_VERSION" >/dev/null 2>&1; then
+        # Remote-only branch: checkout creates a local branch tracking origin,
+        # which already points at the just-fetched tip (no pull needed).
+        git checkout "$TARGET_VERSION"
+        log_info "Checked out remote branch: origin/$TARGET_VERSION"
     else
         log_error "Invalid version/branch: $TARGET_VERSION"
         log_error "Restoring from backup..."
