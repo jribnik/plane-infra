@@ -46,6 +46,26 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Verify the compose stack is healthy. Returns non-zero if any long-running
+# service is not "running", treating a clean exit of one-shot jobs (the
+# "migrator" service, which runs migrations then exits 0) as success. This is
+# more reliable than grepping for "Up", whose wording varies across Compose
+# versions.
+check_services_healthy() {
+    local bad
+    bad=$(docker compose ps -a --format '{{.Service}}|{{.State}}|{{.ExitCode}}' 2>/dev/null \
+        | awk -F'|' '
+            $1 == "migrator" { if ($3 != 0) print $0; next }   # one-shot: only fail on nonzero exit
+            $2 != "running"  { print $0 }
+        ')
+    if [ -n "$bad" ]; then
+        log_error "The following services are not healthy:"
+        echo "$bad" | awk -F'|' '{ printf "  - %s (%s, exit=%s)\n", $1, $2, $3 }'
+        return 1
+    fi
+    return 0
+}
+
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
     log_error "Please run as root (use sudo)"
@@ -99,6 +119,7 @@ log_info "Domain: $DOMAIN"
 log_info "Updating system packages..."
 
 if [ -f /etc/os-release ]; then
+    # shellcheck disable=SC1091
     . /etc/os-release
     OS_ID="$ID"
 else
@@ -190,31 +211,62 @@ log_info "Repository cloned and checked out to branch: $BRANCH"
 #############################################################################
 log_info "Configuring environment..."
 
-if [ ! -f apps/api/.env ]; then
+# Plane's docker-compose.yml needs TWO env files:
+#   - root .env        : consumed by plane-db, plane-mq, and ${...} interpolation
+#                        for the proxy port mapping at compose parse time
+#   - apps/api/.env    : consumed by api/worker/beat-worker/migrator
+# The Postgres password must be identical in both, so we generate it once.
+if [ ! -f .env ] && [ ! -f apps/api/.env ]; then
+    LIVE_SECRET=$(openssl rand -hex 32)
+    POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(openssl rand -hex 16)}"
+
+    #########################################################################
+    # Root .env (plane-db, plane-mq, proxy)
+    #########################################################################
+    cp .env.example .env
+
+    sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=\"$POSTGRES_PASSWORD\"|" .env
+    sed -i "s|^AWS_REGION=.*|AWS_REGION=\"$AWS_REGION\"|" .env
+    sed -i "s|^AWS_ACCESS_KEY_ID=.*|AWS_ACCESS_KEY_ID=\"$AWS_ACCESS_KEY_ID\"|" .env
+    sed -i "s|^AWS_SECRET_ACCESS_KEY=.*|AWS_SECRET_ACCESS_KEY=\"$AWS_SECRET_ACCESS_KEY\"|" .env
+    sed -i "s|^AWS_S3_BUCKET_NAME=.*|AWS_S3_BUCKET_NAME=\"$AWS_S3_BUCKET_NAME\"|" .env
+
+    # Use real AWS S3, not the bundled MinIO. Drop the MinIO endpoint so the
+    # SDK talks to the regional AWS endpoint, and disable the MinIO container.
+    sed -i "s|^USE_MINIO=.*|USE_MINIO=0|" .env
+    sed -i "s|^AWS_S3_ENDPOINT_URL=.*|AWS_S3_ENDPOINT_URL=\"\"|" .env
+
+    # Serve the proxy on port 80 of the host.
+    sed -i "s|^LISTEN_HTTP_PORT=.*|LISTEN_HTTP_PORT=80|" .env
+    sed -i "s|^SITE_ADDRESS=.*|SITE_ADDRESS=:80|" .env
+
+    #########################################################################
+    # apps/api/.env (api, worker, beat-worker, migrator)
+    #########################################################################
     cp apps/api/.env.example apps/api/.env
 
-    # Generate secret key
-    SECRET_KEY=$(openssl rand -hex 32)
+    sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=\"$POSTGRES_PASSWORD\"|" apps/api/.env
 
-    # Update configuration
-    sed -i "s|WEB_URL=\"http://localhost:8000\"|WEB_URL=\"http://$DOMAIN\"|g" apps/api/.env
-    sed -i "s|ADMIN_BASE_URL=\"http://localhost:3001\"|ADMIN_BASE_URL=\"http://$DOMAIN\"|g" apps/api/.env
-    sed -i "s|SPACE_BASE_URL=\"http://localhost:3002\"|SPACE_BASE_URL=\"http://$DOMAIN\"|g" apps/api/.env
-    sed -i "s|APP_BASE_URL=\"http://localhost:3000\"|APP_BASE_URL=\"http://$DOMAIN\"|g" apps/api/.env
-    sed -i "s|LIVE_BASE_URL=\"http://localhost:3100\"|LIVE_BASE_URL=\"http://$DOMAIN\"|g" apps/api/.env
-    sed -i "s|LIVE_SERVER_SECRET_KEY=\"secret-key\"|LIVE_SERVER_SECRET_KEY=\"$SECRET_KEY\"|g" apps/api/.env
-    sed -i "s|DEBUG=0|DEBUG=0|g" apps/api/.env
+    sed -i "s|^WEB_URL=.*|WEB_URL=\"http://$DOMAIN\"|" apps/api/.env
+    sed -i "s|^ADMIN_BASE_URL=.*|ADMIN_BASE_URL=\"http://$DOMAIN\"|" apps/api/.env
+    sed -i "s|^SPACE_BASE_URL=.*|SPACE_BASE_URL=\"http://$DOMAIN\"|" apps/api/.env
+    sed -i "s|^APP_BASE_URL=.*|APP_BASE_URL=\"http://$DOMAIN\"|" apps/api/.env
+    sed -i "s|^LIVE_BASE_URL=.*|LIVE_BASE_URL=\"http://$DOMAIN\"|" apps/api/.env
+    sed -i "s|^LIVE_SERVER_SECRET_KEY=.*|LIVE_SERVER_SECRET_KEY=\"$LIVE_SECRET\"|" apps/api/.env
 
-    # Set AWS credentials from environment variables
-    sed -i "s|AWS_ACCESS_KEY_ID=.*|AWS_ACCESS_KEY_ID=\"$AWS_ACCESS_KEY_ID\"|g" apps/api/.env
-    sed -i "s|AWS_SECRET_ACCESS_KEY=.*|AWS_SECRET_ACCESS_KEY=\"$AWS_SECRET_ACCESS_KEY\"|g" apps/api/.env
-    sed -i "s|AWS_S3_BUCKET_NAME=.*|AWS_S3_BUCKET_NAME=\"$AWS_S3_BUCKET_NAME\"|g" apps/api/.env
-    sed -i "s|AWS_REGION=.*|AWS_REGION=\"$AWS_REGION\"|g" apps/api/.env
+    sed -i "s|^AWS_REGION=.*|AWS_REGION=\"$AWS_REGION\"|" apps/api/.env
+    sed -i "s|^AWS_ACCESS_KEY_ID=.*|AWS_ACCESS_KEY_ID=\"$AWS_ACCESS_KEY_ID\"|" apps/api/.env
+    sed -i "s|^AWS_SECRET_ACCESS_KEY=.*|AWS_SECRET_ACCESS_KEY=\"$AWS_SECRET_ACCESS_KEY\"|" apps/api/.env
+    sed -i "s|^AWS_S3_BUCKET_NAME=.*|AWS_S3_BUCKET_NAME=\"$AWS_S3_BUCKET_NAME\"|" apps/api/.env
 
-    log_info "Environment file configured at apps/api/.env"
-    log_info "✓ AWS credentials configured from environment variables"
+    sed -i "s|^USE_MINIO=.*|USE_MINIO=0|" apps/api/.env
+    sed -i "s|^AWS_S3_ENDPOINT_URL=.*|AWS_S3_ENDPOINT_URL=\"\"|" apps/api/.env
+
+    log_info "Environment files configured (.env and apps/api/.env)"
+    log_info "✓ AWS S3 credentials configured from environment variables"
+    log_info "✓ Generated PostgreSQL password (saved in .env)"
 else
-    log_info "Using existing .env file"
+    log_info "Using existing .env file(s)"
 fi
 
 #############################################################################
@@ -234,7 +286,7 @@ log_info "Waiting for services to start..."
 sleep 30
 
 # Check if services are running
-if docker compose ps | grep -q "Up"; then
+if check_services_healthy; then
     log_info "Services are running!"
 else
     log_error "Some services failed to start. Check logs with: docker compose logs"
@@ -242,40 +294,12 @@ else
 fi
 
 #############################################################################
-# Step 6: Setup reverse proxy (optional)
+# Step 6: Reverse proxy
 #############################################################################
-log_info "Checking for reverse proxy setup..."
-
-if command -v nginx &> /dev/null; then
-    log_info "Nginx detected. Would you like to configure it for Plane?"
-    read -p "Configure Nginx? (y/N) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        cat > /etc/nginx/sites-available/plane <<EOF
-server {
-    listen 80;
-    server_name $DOMAIN;
-
-    location / {
-        proxy_pass http://localhost:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host \$host;
-        proxy_cache_bypass \$http_upgrade;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-
-    client_max_body_size 10M;
-}
-EOF
-        ln -sf /etc/nginx/sites-available/plane /etc/nginx/sites-enabled/
-        nginx -t && systemctl reload nginx
-        log_info "Nginx configured successfully"
-    fi
-fi
+# Plane's compose stack ships its own Caddy "proxy" service bound to
+# ${LISTEN_HTTP_PORT} (80) on the host, which routes to web/api/admin/space.
+# Do NOT add a separate nginx vhost — it would conflict on port 80. If you
+# want TLS termination, configure it in Plane's proxy (see DEPLOY_EC2.md).
 
 #############################################################################
 # Deployment Complete
@@ -293,14 +317,14 @@ log_info "  Restart services: cd $INSTALL_DIR && docker compose restart"
 log_info "  Stop services:    cd $INSTALL_DIR && docker compose down"
 log_info "  Update:           cd $INSTALL_DIR && git pull && docker compose up -d --build"
 echo ""
-log_info "Service endpoints:"
-log_info "  Web App:  http://$DOMAIN:3000"
-log_info "  API:      http://$DOMAIN:8000"
-log_info "  Admin:    http://$DOMAIN:3001/god-mode"
-log_info "  Space:    http://$DOMAIN:3002/spaces"
+log_info "Service endpoints (all served via the proxy on port 80):"
+log_info "  Web App:  http://$DOMAIN/"
+log_info "  API:      http://$DOMAIN/api/"
+log_info "  Admin:    http://$DOMAIN/god-mode/"
+log_info "  Space:    http://$DOMAIN/spaces/"
 echo ""
 log_warn "Next steps:"
-log_warn "  1. Configure SSL/TLS with Let's Encrypt (certbot)"
+log_warn "  1. Enable HTTPS via the bundled Caddy proxy (set SITE_ADDRESS + CERT_EMAIL in .env)"
 log_warn "  2. Set up regular backups of PostgreSQL database"
 log_warn "  3. Configure monitoring and logging"
 log_warn "  4. Review security group rules"

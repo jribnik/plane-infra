@@ -26,7 +26,6 @@ set -e  # Exit on error
 # Configuration
 DEFAULT_INSTALL_DIR="/opt/plane"
 BACKUP_DIR="/opt/plane-backups"
-REPO_URL="${PLANE_REPO_URL:-https://github.com/jribnik/plane.git}"
 TARGET_VERSION="${1:-preview}"
 
 # Colors
@@ -50,6 +49,26 @@ log_error() {
 
 log_step() {
     echo -e "${BLUE}▶${NC} $1"
+}
+
+# Verify the compose stack is healthy. Returns non-zero if any long-running
+# service is not "running", treating a clean exit of one-shot jobs (the
+# "migrator" service, which runs migrations then exits 0) as success. This is
+# more reliable than grepping for "Up", whose wording varies across Compose
+# versions.
+check_services_healthy() {
+    local bad
+    bad=$(docker compose ps -a --format '{{.Service}}|{{.State}}|{{.ExitCode}}' 2>/dev/null \
+        | awk -F'|' '
+            $1 == "migrator" { if ($3 != 0) print $0; next }   # one-shot: only fail on nonzero exit
+            $2 != "running"  { print $0 }
+        ')
+    if [ -n "$bad" ]; then
+        log_error "The following services are not healthy:"
+        echo "$bad" | awk -F'|' '{ printf "  - %s (%s, exit=%s)\n", $1, $2, $3 }'
+        return 1
+    fi
+    return 0
 }
 
 # Check if running as root
@@ -94,9 +113,9 @@ else
     COMPOSE_FILE="$INSTALL_DIR/docker-compose.yaml"
 fi
 
-# Check if services are running
+# Check if any services are currently running (pre-flight warning only)
 cd "$INSTALL_DIR"
-if ! docker compose ps | grep -q "Up"; then
+if [ -z "$(docker compose ps --status running -q 2>/dev/null)" ]; then
     log_warn "No running containers found. Services may be stopped."
     read -p "Continue anyway? (y/N) " -n 1 -r
     echo
@@ -164,7 +183,7 @@ if [ -d "$INSTALL_DIR/.git" ]; then
     cd "$INSTALL_DIR"
 
     # Stash any local changes
-    git stash save "Pre-upgrade stash $BACKUP_TIMESTAMP" || true
+    git stash push -m "Pre-upgrade stash $BACKUP_TIMESTAMP" || true
 
     # Fetch latest
     git fetch --all --tags
@@ -238,7 +257,7 @@ docker compose up -d
 log_step "Running health checks..."
 sleep 20
 
-if docker compose ps | grep -q "Up"; then
+if check_services_healthy; then
     log_info "Services are running"
 else
     log_error "Some services failed to start"
@@ -246,15 +265,17 @@ else
     exit 1
 fi
 
-# Test API endpoint
-log_info "Testing API endpoint..."
+# Test the app through the proxy. The api container does not publish a host
+# port; everything is reachable via the Caddy proxy on ${LISTEN_HTTP_PORT}.
+HTTP_PORT="${LISTEN_HTTP_PORT:-80}"
+log_info "Testing app endpoint (http://localhost:$HTTP_PORT/)..."
 for i in {1..10}; do
-    if curl -sf http://localhost:8000/api/ >/dev/null; then
-        log_info "API is responding"
+    if curl -sf "http://localhost:$HTTP_PORT/" >/dev/null; then
+        log_info "App is responding"
         break
     fi
-    if [ $i -eq 10 ]; then
-        log_warn "API not responding after 30 seconds"
+    if [ "$i" -eq 10 ]; then
+        log_warn "App not responding after 30 seconds"
         log_warn "This may be normal during first startup. Check logs if issues persist."
     fi
     sleep 3

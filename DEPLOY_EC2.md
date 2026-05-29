@@ -54,10 +54,11 @@ This guide covers deploying your custom Plane instance on AWS EC2.
    sudo -E ./deploy-ec2.sh kanban-card-cover-images
    ```
 
-8. **Access Plane**:
-   - Web: `http://your-instance-ip:3000`
-   - API: `http://your-instance-ip:8000`
-   - Admin: `http://your-instance-ip:3001/god-mode`
+8. **Access Plane** (everything is served by Plane's built-in proxy on port 80):
+   - Web: `http://your-instance-ip/`
+   - API: `http://your-instance-ip/api/`
+   - Admin: `http://your-instance-ip/god-mode/`
+   - Spaces: `http://your-instance-ip/spaces/`
 
 ## What the Script Does
 
@@ -65,10 +66,9 @@ The `deploy-ec2.sh` script automates:
 
 1. ✅ System updates and Docker installation
 2. ✅ Plane repository cloning to `/opt/plane` and branch checkout
-3. ✅ Environment configuration
+3. ✅ Environment configuration (writes both `.env` and `apps/api/.env`, generates a PostgreSQL password, and points file storage at real AWS S3)
 4. ✅ Docker image building (takes ~10-15 minutes)
-5. ✅ Service startup
-6. ✅ Optional Nginx reverse proxy setup
+5. ✅ Service startup (the bundled Caddy proxy serves everything on port 80)
 
 **Note:** The deployment scripts are in the `plane-infra` repo, but they will clone and install the actual Plane application to `/opt/plane`.
 
@@ -87,15 +87,19 @@ The deployment script will automatically configure most settings. You can custom
 
 **Optional (set before deployment)**:
 
-- `PLANE_DOMAIN` - Your domain (default: instance public IP)
-- `POSTGRES_PASSWORD` - Database password (auto-generated if not set)
+- `PLANE_DOMAIN` - Your domain (default: `localhost`; set it to your instance IP or hostname)
+- `POSTGRES_PASSWORD` - Database password (auto-generated if not set; written to both `/opt/plane/.env` and `/opt/plane/apps/api/.env`)
 
-**Post-deployment configuration** (`/opt/plane/apps/api/.env`):
+**Post-deployment configuration**:
 
-- `WEB_URL` - Your domain (default: localhost)
-- `GUNICORN_WORKERS` - API workers (default: 2)
-- `FILE_SIZE_LIMIT` - Max upload size in bytes
-- `DEBUG` - Set to 0 for production
+Plane reads two env files. Edit the right one and re-run `docker compose up -d`:
+
+- `/opt/plane/.env` - database/RabbitMQ credentials and the proxy port (`LISTEN_HTTP_PORT`)
+- `/opt/plane/apps/api/.env` - application settings:
+  - `WEB_URL` - Your domain (default: `localhost`)
+  - `GUNICORN_WORKERS` - API workers (default: 2)
+  - `FILE_SIZE_LIMIT` - Max upload size in bytes
+  - `DEBUG` - Set to 0 for production
 
 ## Managing Services
 
@@ -185,24 +189,26 @@ sudo ./rollback-plane.sh /opt/plane-backups/plane-backup-20260521_092000
 
 ## SSL/TLS Setup (Recommended)
 
-### Using Certbot (Let's Encrypt)
+Plane's bundled proxy is Caddy, which can obtain and renew Let's Encrypt
+certificates automatically — you do **not** need nginx or certbot. Edit
+`/opt/plane/.env`:
 
-1. **Install Certbot**:
+```bash
+# Use your real domain (must resolve to this instance's public IP)
+SITE_ADDRESS=plane.yourdomain.com
+CERT_EMAIL=you@yourdomain.com
+LISTEN_HTTPS_PORT=443
+```
 
-   ```bash
-   sudo apt install -y certbot python3-certbot-nginx
-   ```
+Then update the matching `*_BASE_URL` values in `/opt/plane/apps/api/.env`
+to use `https://`, open port 443 in the security group, and restart:
 
-2. **Get certificate**:
+```bash
+cd /opt/plane
+docker compose up -d
+```
 
-   ```bash
-   sudo certbot --nginx -d plane.yourdomain.com
-   ```
-
-3. **Auto-renewal** (certbot sets this up automatically):
-   ```bash
-   sudo certbot renew --dry-run
-   ```
+Caddy provisions the certificate on first request and renews it automatically.
 
 ## Backup & Restore
 
@@ -241,9 +247,11 @@ docker system df
 ### Health Checks
 
 ```bash
-# Check if services are responding
-curl http://localhost:8000/api/health/
-curl http://localhost:3000/
+# Everything is served through the proxy on port 80
+curl http://localhost/
+
+# Or hit the api container directly on the compose network
+docker compose exec api curl -sf http://localhost:8000/
 ```
 
 ## Troubleshooting
