@@ -211,18 +211,47 @@ log_info "Repository cloned and checked out to branch: $BRANCH"
 #############################################################################
 log_info "Configuring environment..."
 
-# Plane's docker-compose.yml needs TWO env files:
-#   - root .env        : consumed by plane-db, plane-mq, and ${...} interpolation
-#                        for the proxy port mapping at compose parse time
-#   - apps/api/.env    : consumed by api/worker/beat-worker/migrator
-# The Postgres password must be identical in both, so we generate it once.
-if [ ! -f .env ] && [ ! -f apps/api/.env ]; then
-    LIVE_SECRET=$(openssl rand -hex 32)
-    POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(openssl rand -hex 16)}"
+# Plane's docker-compose.yml needs THREE env files plus an override:
+#   - root .env                  : plane-db, plane-mq, and ${...} interpolation
+#                                  (proxy port mapping, SITE_ADDRESS) at parse time
+#   - apps/api/.env              : api/worker/beat-worker/migrator
+#   - apps/live/.env             : the "live" websocket service (upstream compose
+#                                  defines no env_file for it, so we add one)
+#   - docker-compose.override.yml: wires apps/live/.env into the live service and
+#                                  passes SITE_ADDRESS into the proxy (Caddy reads
+#                                  it from the container env, not root .env interp)
+#
+# Several secrets must stay consistent across files (Postgres password shared by
+# root .env + apps/api/.env; LIVE_SERVER_SECRET_KEY shared by api + live). To stay
+# correct even after an interrupted run that left only some files behind, we
+# derive each secret from whichever file already has it, else generate it. Files
+# are then written independently so a missing one is always (re)created.
 
-    #########################################################################
-    # Root .env (plane-db, plane-mq, proxy)
-    #########################################################################
+# Read a KEY="value" (or KEY=value) from a file, stripping surrounding quotes.
+read_env_value() {
+    local key="$1" file="$2"
+    [ -f "$file" ] || return 1
+    sed -n "s|^${key}=\\(.*\\)|\\1|p" "$file" | head -1 | sed 's|^"\(.*\)"$|\1|'
+}
+
+# Derive-or-generate the shared secrets. The `|| true` on each read is load-
+# bearing: under `set -e`, a command substitution that exits non-zero (which
+# read_env_value does when the file is absent — the normal case on a clean
+# install) would otherwise abort the whole script.
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(read_env_value POSTGRES_PASSWORD apps/api/.env \
+    || read_env_value POSTGRES_PASSWORD .env || true)}"
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(openssl rand -hex 16)}"
+
+LIVE_SECRET="$(read_env_value LIVE_SERVER_SECRET_KEY apps/api/.env || true)"
+LIVE_SECRET="${LIVE_SECRET:-$(openssl rand -hex 32)}"
+
+SECRET_KEY="$(read_env_value SECRET_KEY apps/api/.env || true)"
+SECRET_KEY="${SECRET_KEY:-$(openssl rand -hex 32)}"
+
+#############################################################################
+# Root .env (plane-db, plane-mq, proxy)
+#############################################################################
+if [ ! -f .env ]; then
     cp .env.example .env
 
     sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=\"$POSTGRES_PASSWORD\"|" .env
@@ -240,9 +269,15 @@ if [ ! -f .env ] && [ ! -f apps/api/.env ]; then
     sed -i "s|^LISTEN_HTTP_PORT=.*|LISTEN_HTTP_PORT=80|" .env
     sed -i "s|^SITE_ADDRESS=.*|SITE_ADDRESS=:80|" .env
 
-    #########################################################################
-    # apps/api/.env (api, worker, beat-worker, migrator)
-    #########################################################################
+    log_info "Wrote root .env"
+else
+    log_info "Root .env already exists — leaving it untouched"
+fi
+
+#############################################################################
+# apps/api/.env (api, worker, beat-worker, migrator)
+#############################################################################
+if [ ! -f apps/api/.env ]; then
     cp apps/api/.env.example apps/api/.env
 
     sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=\"$POSTGRES_PASSWORD\"|" apps/api/.env
@@ -262,16 +297,82 @@ if [ ! -f .env ] && [ ! -f apps/api/.env ]; then
     sed -i "s|^USE_MINIO=.*|USE_MINIO=0|" apps/api/.env
     sed -i "s|^AWS_S3_ENDPOINT_URL=.*|AWS_S3_ENDPOINT_URL=\"\"|" apps/api/.env
 
-    log_info "Environment files configured (.env and apps/api/.env)"
-    log_info "✓ AWS S3 credentials configured from environment variables"
-    log_info "✓ Generated PostgreSQL password (saved in .env)"
+    # The api .env.example ships no SECRET_KEY line, so there's nothing for sed
+    # to match — append it. Django refuses to start without it.
+    echo "SECRET_KEY=\"$SECRET_KEY\"" >> apps/api/.env
+
+    log_info "Wrote apps/api/.env"
 else
-    log_info "Using existing .env file(s)"
+    log_info "apps/api/.env already exists — leaving it untouched"
+    # Even on an existing file, a missing SECRET_KEY is fatal — add it if absent.
+    if ! grep -q '^SECRET_KEY=' apps/api/.env; then
+        echo "SECRET_KEY=\"$SECRET_KEY\"" >> apps/api/.env
+        log_warn "apps/api/.env was missing SECRET_KEY — appended a generated one"
+    fi
 fi
+
+#############################################################################
+# apps/live/.env (live websocket service)
+#############################################################################
+# Upstream compose defines no env_file for the live service, so it starts with
+# no env and its validator hard-exits on missing API_BASE_URL/LIVE_SERVER_SECRET_KEY.
+# Internal docker hostnames; PORT=3000 because the proxy upstream is live:3000.
+if [ ! -f apps/live/.env ]; then
+    cat > apps/live/.env <<EOF
+PORT=3000
+API_BASE_URL="http://api:8000"
+LIVE_BASE_PATH="/live"
+LIVE_SERVER_SECRET_KEY="$LIVE_SECRET"
+REDIS_HOST="plane-redis"
+REDIS_PORT="6379"
+REDIS_URL="redis://plane-redis:6379/"
+EOF
+    log_info "Wrote apps/live/.env"
+else
+    log_info "apps/live/.env already exists — leaving it untouched"
+fi
+
+#############################################################################
+# docker-compose.override.yml (wire live env + proxy SITE_ADDRESS)
+#############################################################################
+# Auto-merged by compose. Adds the env_file the upstream live service lacks, and
+# passes SITE_ADDRESS into the proxy container (Caddy reads {$SITE_ADDRESS} from
+# its own env; root-.env interpolation does NOT inject vars into containers).
+if [ ! -f docker-compose.override.yml ]; then
+    cat > docker-compose.override.yml <<'EOF'
+services:
+  live:
+    env_file:
+      - ./apps/live/.env
+  proxy:
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+EOF
+    log_info "Wrote docker-compose.override.yml"
+else
+    log_info "docker-compose.override.yml already exists — leaving it untouched"
+fi
+
+log_info "✓ Environment configured (.env, apps/api/.env, apps/live/.env, override)"
+log_info "✓ AWS S3 credentials configured from environment variables"
+log_info "✓ Generated PostgreSQL password, Django SECRET_KEY, and live secret"
 
 #############################################################################
 # Step 4: Build and start services
 #############################################################################
+# Building all 9 images at once is disk-hungry; an undersized root volume fails
+# ~10 min deep with a cryptic pip "No space left on device". Fail fast instead.
+DOCKER_ROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
+AVAIL_GB=$(df -BG --output=avail "$DOCKER_ROOT" 2>/dev/null | tail -1 | tr -dc '0-9')
+MIN_GB=20
+if [ -n "$AVAIL_GB" ] && [ "$AVAIL_GB" -lt "$MIN_GB" ]; then
+    log_error "Only ${AVAIL_GB}GB free on $DOCKER_ROOT; the build needs ~${MIN_GB}GB."
+    log_error "Grow the volume (docs recommend 30GB+) and re-run. On AL2023:"
+    log_error "  sudo growpart /dev/nvme0n1 1 && sudo xfs_growfs /"
+    exit 1
+fi
+log_info "Disk check OK: ${AVAIL_GB:-?}GB free on $DOCKER_ROOT"
+
 log_info "Building Docker images (this may take 10-15 minutes)..."
 
 docker compose build
