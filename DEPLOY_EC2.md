@@ -38,6 +38,19 @@ This guide covers deploying your custom Plane instance on AWS EC2.
    export AWS_REGION=us-east-1
    ```
 
+   **GovCloud (or any non-default partition):** also set an explicit S3
+   endpoint, because the SDK does not derive it from the region:
+
+   ```bash
+   export AWS_REGION=us-gov-east-1
+   export AWS_S3_ENDPOINT_URL=https://s3.us-gov-east-1.amazonaws.com
+   ```
+
+   Without this, uploads fail with `InvalidAccessKeyId` (your GovCloud key is
+   sent to the commercial `s3.amazonaws.com` endpoint, which has no record of
+   it). You must also configure bucket CORS — see
+   [S3 Bucket CORS](#s3-bucket-cors-required-for-uploads) below.
+
 6. **Optional: Set custom domain**:
 
    ```bash
@@ -89,6 +102,7 @@ The deployment script will automatically configure most settings. You can custom
 
 - `PLANE_DOMAIN` - Your domain (default: `localhost`; set it to your instance IP or hostname)
 - `POSTGRES_PASSWORD` - Database password (auto-generated if not set; written to both `/opt/plane/.env` and `/opt/plane/apps/api/.env`)
+- `AWS_S3_ENDPOINT_URL` - Explicit S3 endpoint (default: empty = standard regional endpoint). **Required for GovCloud**, e.g. `https://s3.us-gov-east-1.amazonaws.com`
 
 **Post-deployment configuration**:
 
@@ -186,6 +200,52 @@ ls -lht /opt/plane-backups/
 # Rollback to a specific backup
 sudo ./rollback-plane.sh /opt/plane-backups/plane-backup-20260521_092000
 ```
+
+## S3 Bucket CORS (required for uploads)
+
+Plane uploads files (project covers, attachments, profile images) directly
+from the **browser** to S3 using a presigned URL. The browser will block
+reading the response unless the bucket allows your Plane origin via CORS.
+Symptom: the upload PUT succeeds (HTTP `204`) but the UI still errors, and the
+browser console shows an `Access-Control-Allow-Origin` / CORS message.
+
+Create `cors.json` with your Plane origin (scheme + host + port, **no** trailing
+slash — it must match exactly what's in the browser address bar):
+
+```json
+{
+  "CORSRules": [
+    {
+      "AllowedOrigins": [
+        "http://plane.yourdomain.com",
+        "https://plane.yourdomain.com"
+      ],
+      "AllowedMethods": ["GET", "PUT", "POST", "HEAD"],
+      "AllowedHeaders": ["*"],
+      "ExposeHeaders": ["ETag"],
+      "MaxAgeSeconds": 3000
+    }
+  ]
+}
+```
+
+Listing both `http` and `https` origins makes the eventual TLS cutover painless
+(they are distinct origins to the browser). Apply and verify (use your bucket's
+region — for GovCloud, a gov region):
+
+```bash
+aws s3api put-bucket-cors \
+  --bucket your_bucket_name \
+  --cors-configuration file://cors.json \
+  --region us-east-1
+
+aws s3api get-bucket-cors \
+  --bucket your_bucket_name \
+  --region us-east-1
+```
+
+This is bucket-side — no container restart needed. Hard-refresh the browser
+afterward, since a failed CORS preflight may be cached.
 
 ## SSL/TLS Setup (Recommended)
 

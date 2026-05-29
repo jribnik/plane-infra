@@ -28,6 +28,12 @@ BRANCH="${1:-preview}"
 INSTALL_DIR="/opt/plane"
 DOMAIN="${PLANE_DOMAIN:-localhost}"
 
+# Empty by default so the SDK uses the standard regional endpoint for
+# AWS_REGION. GovCloud (and other non-default partitions) are NOT auto-derived
+# from the region by django-storages/boto, so set this explicitly there, e.g.
+#   export AWS_S3_ENDPOINT_URL=https://s3.us-gov-east-1.amazonaws.com
+AWS_S3_ENDPOINT_URL="${AWS_S3_ENDPOINT_URL:-}"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -260,10 +266,11 @@ if [ ! -f .env ]; then
     sed -i "s|^AWS_SECRET_ACCESS_KEY=.*|AWS_SECRET_ACCESS_KEY=\"$AWS_SECRET_ACCESS_KEY\"|" .env
     sed -i "s|^AWS_S3_BUCKET_NAME=.*|AWS_S3_BUCKET_NAME=\"$AWS_S3_BUCKET_NAME\"|" .env
 
-    # Use real AWS S3, not the bundled MinIO. Drop the MinIO endpoint so the
-    # SDK talks to the regional AWS endpoint, and disable the MinIO container.
+    # Use real AWS S3, not the bundled MinIO. Set the endpoint to whatever the
+    # operator supplied (empty = default regional endpoint; GovCloud must pass
+    # an explicit one), and disable the MinIO container.
     sed -i "s|^USE_MINIO=.*|USE_MINIO=0|" .env
-    sed -i "s|^AWS_S3_ENDPOINT_URL=.*|AWS_S3_ENDPOINT_URL=\"\"|" .env
+    sed -i "s|^AWS_S3_ENDPOINT_URL=.*|AWS_S3_ENDPOINT_URL=\"$AWS_S3_ENDPOINT_URL\"|" .env
 
     # Serve the proxy on port 80 of the host.
     sed -i "s|^LISTEN_HTTP_PORT=.*|LISTEN_HTTP_PORT=80|" .env
@@ -295,7 +302,7 @@ if [ ! -f apps/api/.env ]; then
     sed -i "s|^AWS_S3_BUCKET_NAME=.*|AWS_S3_BUCKET_NAME=\"$AWS_S3_BUCKET_NAME\"|" apps/api/.env
 
     sed -i "s|^USE_MINIO=.*|USE_MINIO=0|" apps/api/.env
-    sed -i "s|^AWS_S3_ENDPOINT_URL=.*|AWS_S3_ENDPOINT_URL=\"\"|" apps/api/.env
+    sed -i "s|^AWS_S3_ENDPOINT_URL=.*|AWS_S3_ENDPOINT_URL=\"$AWS_S3_ENDPOINT_URL\"|" apps/api/.env
 
     # The api .env.example ships no SECRET_KEY line, so there's nothing for sed
     # to match — append it. Django refuses to start without it.
