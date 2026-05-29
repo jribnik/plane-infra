@@ -382,6 +382,12 @@ log_info "Disk check OK: ${AVAIL_GB:-?}GB free on $DOCKER_ROOT"
 
 log_info "Building Docker images (this may take 10-15 minutes)..."
 
+# Bake the deployed commit into the web build so the in-app version badge
+# shows which commit is live (branches share a package.json version).
+APP_GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "")
+export APP_GIT_SHA
+log_info "Building web with APP_GIT_SHA=${APP_GIT_SHA:-<none>}"
+
 docker compose build
 
 log_info "Starting services..."

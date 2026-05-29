@@ -235,6 +235,12 @@ log_info "Updated to: $TARGET_VERSION @ $NEW_COMMIT"
 #############################################################################
 log_step "Rebuilding Docker images (this may take 10-15 minutes)..."
 
+# Bake the deployed commit into the web build so the in-app version badge
+# shows which commit is live (branches share a package.json version).
+APP_GIT_SHA="$NEW_COMMIT"
+export APP_GIT_SHA
+log_info "Building web with APP_GIT_SHA=$APP_GIT_SHA"
+
 docker compose build --pull
 
 #############################################################################
